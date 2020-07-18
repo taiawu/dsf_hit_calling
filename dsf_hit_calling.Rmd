@@ -1,0 +1,59 @@
+---
+title: "DSF dye hit calling pipeline"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+# load packages
+library(quantmod) # contains the findValleys function, which maybe we should just extract and put verbatim in a source file instead of loading this whole thing...?
+library(minpack.lm) # contains the nlsLM function, which we use for our fitting
+library(modelr)
+library(signal)
+source("dsf_caller.R")
+
+library(tidyverse)
+filter <- dplyr::filter # signal over-writes dplyr::filter
+```
+
+
+Enter names for the relevant files
+```{r}
+layout_filename <- "ENTER LAYOUT FILENAME.csv"
+screen_file <- "ENTER SCREEN FILENAME.csv"
+
+```
+
+For processing a single screen
+```{r}
+layout <- make_layout(layout_filename)
+
+plate1 <- read_screen( screen_file = screen_file, 
+                       layout = layout, 
+                       plate_name = "plate1")
+
+#### problem: loess smoothers (of which there are at least two in the pipeline) with a span of 0.1 produces NaNs when the data is below a certain length!!! in this case, it is 60 data points
+find_tms <- find_tms_closure(win3d = 5, 
+                             n_meas = 69, 
+                             min_T =  25, 
+                             max_T = 84) #find_tms_closure(low_T = 25, high_T = 94, n_meas = 69, min_T =  25, max_T = 80)
+
+plate1_tms <- find_tms(df_raw =  plate1) # use the closure to analyze the data. Output will have all four fits, as well as dRFU tmas 
+```
+
+Based on the raw data appearance, write the relevant closure
+```{r}
+
+```
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
