@@ -13,25 +13,28 @@ library(quantmod) # contains the findValleys function, which maybe we should jus
 library(minpack.lm) # contains the nlsLM function, which we use for our fitting
 library(modelr)
 library(signal)
-source("dsf_caller.R")
-
+library(dtw) # dynamic time warping
 library(tidyverse)
+
+source("dsf_caller.R") # relies on the above libraries 
 filter <- dplyr::filter # signal over-writes dplyr::filter
 ```
 
 
 Enter names for the relevant files
 ```{r}
-layout_filename <- "ENTER LAYOUT FILENAME.csv"
-screen_file <- "ENTER SCREEN FILENAME.csv"
-
+data_path <- "~/Box Sync/data/Nsp3_screens/Exp0849--20200715_Nsp3_purine_library_screen_20uM/raw/"
+layout_filename <- "Exp0839--20200714_Nsp3_screen_layout.csv"
+screen_filename <- "Exp0849--20200715_Nsp3_purine_library_screen_20uM_plate1.csv"
 ```
 
 For processing a single screen
 ```{r}
-layout <- make_layout(layout_filename)
+layout <- paste0(data_path, layout_filename) %>%
+          make_layout()
 
-plate1 <- read_screen( screen_file = screen_file, 
+plate1 <-  paste0(data_path, screen_filename) %>%
+            read_screen( screen_file = . , 
                        layout = layout, 
                        plate_name = "plate1")
 
@@ -42,12 +45,662 @@ find_tms <- find_tms_closure(win3d = 5,
                              max_T = 84) #find_tms_closure(low_T = 25, high_T = 94, n_meas = 69, min_T =  25, max_T = 80)
 
 plate1_tms <- find_tms(df_raw =  plate1) # use the closure to analyze the data. Output will have all four fits, as well as dRFU tmas 
+
+# Structure of the outlist is as follows
+                                  # outlist <- list(df_tms = df_tms,
+                                  #                 s1_list = s1_list,
+                                  #                 s1_d_list = s1_d_list,
+                                  #                 s2_list = s2_list,
+                                  #                 s2_d_list = s2_d_list)
+# and each list contains the following elements
+  # out_list <- list("model" = model_fit, 
+  #                  "df_BIC" = df_BIC, 
+  #                  "df_models" = df_models, 
+  #                  "tm_table_models" = tm_table_models$df_tma_mean,
+  #                  "tm_models_all" = tm_table_models$df_tma,
+  #                  "df_models_sgd1" = tm_table_models$df_pred_sgd1
+  # )
+
+
 ```
 
-Based on the raw data appearance, write the relevant closure
+Dynamic time warping?
 ```{r}
+# example(dtw)
+## A noisy sine wave as query
+dx<-seq(0,6.28,len=100);
+query<-sin(idx)+runif(100)/10;
+
+## A cosine is for reference; sin and cos are offset by 25 samples
+reference<-cos(idx)
+
+plot(reference); lines(query,col="blue");
+
+ ## Find the best match
+ alignment <- dtw(query,reference);
+
+ ## Display the mapping, AKA warping function - may be multiple-valued
+ ## Equivalent to: plot(alignment,type="alignment")
+
+ plot(alignment$index1,alignment$index2,main="Warping function");
+
+ ## Confirm: 25 samples off-diagonal alignment
+ lines(1:100-25,col="red")
+
+ #########
+ ##
+ ## Partial alignments are allowed.
+ ##
+ 
+ alignmentOBE <-
+   dtw(query[44:88],reference,
+       keep=TRUE,step=asymmetric,
+       open.end=TRUE,open.begin=TRUE);
+
+ plot(alignmentOBE,type="two",off=1);
+
+ #########
+ ##
+ ## Subsetting allows warping and unwarping of
+ ## timeseries according to the warping curve. 
+ ## See first example below.
+ ##
+ 
+ ## Most useful: plot the warped query along with reference 
+ plot(reference)
+
+ lines(query[alignment$index1]~alignment$index2,col="blue")
+
+ ## Plot the (unwarped) query and the inverse-warped reference
+ plot(query,type="l",col="blue")
+
+ points(reference[alignment$index2]~alignment$index1)
+
+ #########
+ ##
+ ## Contour plots of the cumulative cost matrix
+ ##    similar to: plot(alignment,type="density") or
+ ##                dtwPlotDensity(alignment)
+ ## See more plots in ?plot.dtw 
+ ##
+ ## keep = TRUE so we can look into the cost matrix
+ 
+ alignment<-dtw(query,reference,keep=TRUE);
+
+ contour(alignment$costMatrix,col=terrain.colors(100),x=1:100,y=1:100,
+ 	xlab="Query (noisy sine)",ylab="Reference (cosine)");
+
+ lines(alignment$index1,alignment$index2,col="red",lwd=2);
+
+ #########
+ ##
+ ## An hand-checkable example
+ ##
+```
+Set up the test cases for DSF data
+```{r}
+df_dtw <- plate1 %>%
+          filter(channel == "TAMRA",
+                 Temperature < 85) %>%
+          group_by(condition) %>%
+          mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+  ungroup()
+
+mean_controls <- df_dtw %>% 
+                    filter(Compound_class != "test_cmpd")  %>%
+                    group_by(Compound_class, Temperature) %>%
+                    summarise(mean_norm = mean(value_norm)) %>%
+                    ungroup()
+
+ref_neg <- mean_controls %>%
+            filter(Compound_class == "DMSO") %>%
+            select(mean_norm) %>%
+            as_vector()
+
+ref_pos <- mean_controls %>%
+            filter(Compound_class == "ADP-ribose") %>%
+            select(mean_norm) %>%
+            as_vector()
+
+query1 <- df_dtw %>%
+              filter(well == "C12")%>%  # %in% c("C12", "M20"))
+              select(value_norm) %>%
+              as_vector()
+
+query2 <- df_dtw %>%
+              filter(well == "M20")%>%  # %in% c("C12", "M20"))
+              select(value_norm) %>%
+            as_vector()
+
+plot(ref_neg)
+plot(ref_pos)
+plot(query1)
+plot(query2)
+```
+
+
+```{r}
+### as a reference, use the mean of all of the negative controls 
+
+ ## Find the best match
+# plot(ref_neg)
+# plot(ref_pos)
+# plot(ref_test1)
+# plot(ref_test2)
+query <- query2
+
+ alignment <- dtw(ref_neg, query);
+
+ ## Display the mapping, AKA warping function - may be multiple-valued
+ ## Equivalent to: plot(alignment,type="alignment")
+
+ plot(alignment$index1,alignment$index2,main="Warping function");
+ lines(1:100-25,col="red")
+
+ #########
+ ##
+ ## Partial alignments are allowed.
+ ##
+ 
+ alignmentOBE <-dtw(query1, ref_neg,
+       keep=TRUE,step=asymmetric,
+       open.end=TRUE,open.begin=TRUE);
+  plot(alignmentOBE,type="two",off=1);
+
+ 
+  alignmentOBE <-dtw(query2, ref_neg,
+       keep=TRUE,step=asymmetric,
+       open.end=TRUE,open.begin=TRUE);
+
+ plot(alignmentOBE,type="two",off=1);
+ 
+  alignmentOBE <-dtw(ref_pos, ref_neg,
+       keep=TRUE,step=asymmetric,
+       open.end=TRUE,open.begin=TRUE);
+   alignmentOBE
+
+ plot(alignmentOBE,type="two",off=1);
+
+ #########
+ ##
+ ## Subsetting allows warping and unwarping of
+ ## timeseries according to the warping curve. 
+ ## See first example below.
+ ##
+ 
+ ## Most useful: plot the warped query along with reference 
+ plot(ref_neg)
+
+ lines(query[alignment$index1]~alignment$index2,col="blue")
+
+ ## Plot the (unwarped) query and the inverse-warped reference
+ plot(query,type="l",col="blue")
+
+ points(ref_neg[alignment$index2]~alignment$index1)
+
+ #########
+ ##
+ ## Contour plots of the cumulative cost matrix
+ ##    similar to: plot(alignment,type="density") or
+ ##                dtwPlotDensity(alignment)
+ ## See more plots in ?plot.dtw 
+ ##
+ 
+ ## keep = TRUE so we can look into the cost matrix
+ 
+ # alignment<-dtw(query,ref_neg,keep=TRUE);
+ # 
+ # contour(alignment$costMatrix,col=terrain.colors(100),x=1:100,y=1:100,
+ # 	xlab="Query (noisy sine)",ylab="Reference (cosine)");
+ # 
+ # lines(alignment$index1,alignment$index2,col="red",lwd=2)
+
+ #########
+ ##
+ ## An hand-checkable example
+ ##
+```
+# try iterating over several
+```{r}
+mat <- tibble(ref_neg = ref_neg,
+              reF_pos = ref_pos,
+              query1 = query1,
+              query2 = query2) %>%
+              t()
+
+pair_dist <- proxy::dist(mat, mat, method = "DTW")
+pair_dist
+
+ref_mat <- tibble(ref_neg = ref_neg,
+              reF_pos = ref_pos) %>%
+  t()
+
+query_mat <- tibble(query1 = query1,
+              query2 = query2) %>%
+  t()
+
+comparison_dist <- proxy::dist(ref_mat, query_mat, method = "DTW")
+# this can be used to determine which of a set of input curves best match to the query. This is great for two reasons
+# one: we can seed the input curves with various DSF curves which we think may represent legitimate or interesting shape classes
+# as a screen may evolve over time, the "hit" archetypes can be extracted and added to this set, to query for the appearance of this archetype going forward
+# see the note on this package about this function to think/learn more about this option.
+
+
+comparison_dist
+
+
+plot(pair_dist[1,])
+plot(pair_dist[2,])
+plot(pair_dist[3,])
+plot(pair_dist[4,])
+
+dist(q, p, method = "DTW")
 
 ```
+```{r}
+# try this dist method for the full plate! 
+
+plate1 %>% head()
+
+plate1_mat <- plate1 %>% 
+              filter(channel == "TAMRA") %>%
+              select(well, Temperature, value) %>%
+              pivot_wider(names_from = well, values_from = value) %>%
+              select(-Temperature) %>%
+              t()
+
+plate1_mat_small <- plate1 %>% 
+              group_by(condition) %>%
+                mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+              ungroup() %>%
+              filter(channel == "TAMRA",
+                     row == "C") %>%
+              select(well, Temperature, value_norm) %>%
+              pivot_wider(names_from = well, values_from = value_norm) %>%
+              select(-Temperature) %>%
+              t()
+
+
+screen_compare_all <- proxy::dist(plate1_mat, plate1_mat, method = "DTW") # this could help us find shape clusters from within the 
+
+screen_compare_all2 <- proxy::dist(plate1_mat_small, plate1_mat_small, method = "DTW", keep = TRUE, step = asymmetric, open.end = TRUE, open.begin = TRUE)
+```
+
+
+
+```{r}
+# adapted from src of harrietr
+dist_to_tibble <- function(dist, order = NULL) {
+  # original code: melt_dist
+  if(!is.null(order)){
+    dist <- dist[order, order]
+  } else {
+    order <- row.names(dist)
+  }
+  diag(dist) <- NA
+  dist[upper.tri(dist)] <- NA
+  dist_df <- as.data.frame(dist)
+  dist_df$iso1 <- row.names(dist)
+  dist_df <- dist_df %>%
+    pivot_longer(-iso1, values_to = "value", names_to = "name", values_drop_na = TRUE)  %>%
+    set_names(c("reference", "query", "dtw_dist"))
+  return(dist_df)
+}
+
+melt_test <-dist_to_tibble(mat_test)
+
+plate1_dist_df_all <- screen_compare_all %>%
+  as.data.frame.matrix() %>%
+  dist_to_tibble() %>%
+  mutate(well = .$reference) %>%
+  left_join(layout, by =  "well")
+
+plate1_dist_df %>% head()
+```
+
+```{r}
+screen_compare_all2
+plate1_dist_df <- screen_compare_all2 %>%
+  as.data.frame.matrix() %>%
+  dist_to_tibble() %>%
+  mutate(well = .$reference) %>%
+  left_join(layout, by =  "well")
+
+plate1_dist_df %>%
+  ggplot(aes(x = reference, y = dtw_dist, color = Compound_class)) +
+  geom_point(alpha = 0.5)
+```
+
+```{r}
+plate1_mat_query  <- plate1 %>% 
+              group_by(condition) %>%
+                mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+              ungroup() %>%
+              filter(channel == "TAMRA") %>%
+   filter(Compound_class == "test_cmpd") %>%
+              select(well, Temperature, value_norm) %>%
+              pivot_wider(names_from = well, values_from = value_norm) %>%
+              select(-Temperature)  %>%
+  t()
+
+
+plate1_mat_ref  <- plate1 %>% 
+              group_by(condition) %>%
+                mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+              ungroup() %>%
+              filter(channel == "TAMRA") %>%
+              filter(Compound_class != "test_cmpd") %>%
+              select(well, Temperature, value_norm) %>%
+              pivot_wider(names_from = well, values_from = value_norm) %>%
+              select(-Temperature)  %>%
+                t()
+
+plate1_mat_neg  <- plate1 %>% 
+              group_by(condition) %>%
+                mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+              ungroup() %>%
+              filter(channel == "TAMRA") %>%
+   filter(Compound_class == "DMSO") %>%
+              select(well, Temperature, value_norm) %>%
+              pivot_wider(names_from = well, values_from = value_norm) %>%
+              select(-Temperature)  %>%
+                t()
+
+plate1_mat_pos  <- plate1 %>% 
+              group_by(condition) %>%
+                mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+              ungroup() %>%
+              filter(channel == "TAMRA") %>%
+   filter(Compound_class == "ADP-ribose") %>%
+              select(well, Temperature, value_norm) %>%
+              pivot_wider(names_from = well, values_from = value_norm) %>%
+              select(-Temperature)  %>%
+                t()
+
+
+plate1_mat_all  <- plate1 %>% 
+              group_by(condition) %>%
+                mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+              ungroup() %>%
+              filter(channel == "TAMRA") %>%
+   #filter(Compound_class == "test_cmpd") %>%
+              select(well, Temperature, value_norm) %>%
+              pivot_wider(names_from = well, values_from = value_norm) %>%
+              select(-Temperature)  %>%
+  t()
+ 
+
+dist_all_norm <- proxy::dist(plate1_mat_all , plate1_mat_all , method = "DTW", keep = TRUE, step = asymmetric, open.end = TRUE, open.begin = TRUE) # determine the distances to the references
+
+dist_to_ref <- proxy::dist(plate1_mat_ref, plate1_mat_query, method = "DTW", keep = TRUE, step = asymmetric, open.end = TRUE, open.begin = TRUE) # determine the distances to the references
+
+dist_to_neg <- proxy::dist(plate1_mat_neg, plate1_mat_neg, method = "DTW", keep = TRUE, step = asymmetric, open.end = TRUE, open.begin = TRUE) # determine the distances to the references
+
+dist_to_pos <- proxy::dist(plate1_mat_pos, plate1_mat_pos, method = "DTW", keep = TRUE, step = asymmetric, open.end = TRUE, open.begin = TRUE) # determine the distances to the references
+
+plate1_dist_df <- dist_to_ref %>%
+                  as.data.frame.matrix() %>%
+                dist_to_tibble() %>%
+                mutate(well = .$query) %>%
+                left_join(layout, by =  "well") %>%
+                mutate(dtw_type = rep("test_cmpd", times = nrow(.)))
+
+neg_dist_df <- dist_to_neg %>%
+                  as.data.frame.matrix() %>%
+                dist_to_tibble() %>%
+                mutate(well = .$query) %>%
+                left_join(layout, by =  "well") %>%
+  mutate(dtw_type = rep("neg", times = nrow(.)))
+
+pos_dist_df <- dist_to_pos %>%
+                  as.data.frame.matrix() %>%
+                dist_to_tibble() %>%
+                mutate(well = .$query) %>%
+                left_join(layout, by =  "well") %>%
+  mutate(dtw_type = rep("pos", times = nrow(.)))
+
+dist_all_df <- bind_rows(plate1_dist_df, pos_dist_df, neg_dist_df)
+
+# how much distance is significant? call it 3 SD, per usual
+thresh <- dist_all_df %>%
+  group_by(dtw_type) %>%
+  summarise(mean_dtw = mean(dtw_dist),
+            sd_dtw = sd(dtw_dist))
+
+thresh_pos
+  
+
+plate1_dist_df %>% head()
+
+dist_all_df %>%
+  ggplot(aes(x = reference, y = dtw_dist, color = dtw_type)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(aes(yintercept = 1.633708	)) +
+  geom_hline(aes(yintercept = 1.633708 + 3*0.8610685	))
+
+
+# pull out the wells which are >3 SD 
+outlier_dtw <- dist_all_df %>%
+                filter(dtw_dist > (1.633708 + 10*0.8610685)) %>%
+                select(query) %>%
+                unique() %>%
+  as_vector()
+
+outlier_dtw 
+```
+
+```{r}
+plate1_dist_df_all %>%
+   ggplot(aes(x = reference, y = dtw_dist, color = Compound_class)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(aes(yintercept = 1.633708	)) +
+  geom_hline(aes(yintercept = 1.633708 + 3*0.8610685	)) ->p_dist
+
+ggsave("p_dist.pdf", p_dist)
+```
+
+```{r}
+plate1_dist_df <-   dist_all_norm %>%
+                    as.data.frame.matrix() %>%
+                    dist_to_tibble() %>%
+                    mutate(well = .$query) %>%
+                    left_join(layout, by =  "well")
+
+thresh_all <- dist_all_df %>%
+    filter(reference %in% control_wells,
+           query %in% control_wells) %>%
+    summarise(mean_dtw = mean(dtw_dist),
+            sd_dtw = sd(dtw_dist))
+
+thresh_all 
+
+  group_by(dtw_type) %>%
+  summarise(mean_dtw = mean(dtw_dist),
+            sd_dtw = sd(dtw_dist))
+
+thresh_pos
+
+
+# filter just to consider comparisions with the controls 
+plate1_dist_df_cmpds <- plate1_dist_df %>% 
+  filter(reference %in% control_wells)
+plate1_dist_df_cmpds
+  
+plate1_dist_df_cmpds  %>%
+  ggplot(aes(x = reference, y = dtw_dist, color = Compound_class)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(aes(yintercept = 1.955508))+
+  geom_hline(aes(yintercept = 1.955508 + 3*1.591415	))-> p_test_all
+
+ggsave("p_test_all.pdf",p_test_all)
+
+over_threshhold <-  plate1_dist_df_cmpds  %>%
+  filter(dtw_dist > 1.955508 + 3*1.591415) %>%
+  arrange(dtw_dist) %>%
+  unique() %>%
+    select(well) %>%
+  as_vector() %>% 
+  unique()
+
+over_threshhold 
+
+plate1 %>%
+  group_by(condition) %>%
+  filter(channel == "TAMRA") %>%
+  mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+  ungroup() %>%
+  filter(well %in% c("A1", "A2", over_threshhold )) %>%
+  ggplot(aes(x = Temperature, y = value_norm, group = condition))+
+  geom_line()+
+  facet_wrap(~well, scales = "free")  -> p_dist
+  ggsave("p_dist_all.pdf", p_dist, width = 20, height = 20)
+```
+
+
+```{r}
+# control_wells <-plate1 %>%
+#   filter(Compound_class != "test_cmpd") %>%
+#   select(well) %>%
+#   as_vector() %>%
+#   unique()
+# control_wells
+
+dtw_hits <- plate1_dist_df_all %>%
+            filter(dtw_dist > 20859) %>%
+            filter(query %in% control_wells) %>%
+              select(reference) %>%
+              unique()
+
+
+dtw_hits 
+
+plate1_dist_df_all %>%
+  filter(well == "M20") %>%
+  filter(query %in% control_wells)
+
+
+
+plate1 %>%
+  group_by(condition) %>%
+  filter(channel == "TAMRA") %>%
+  mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+  ungroup() %>%
+  filter(well %in% c("A1", "A2","M20", "C10")) %>%
+  ggplot(aes(x = Temperature, y = value, group = condition))+
+  geom_line()+
+  facet_wrap(~well) 
+```
+
+
+
+
+```{r}
+# plot the curves with a delta shape
+
+plate1 %>% head()
+
+outlier_dtw <- dist_all_df %>%
+                filter(dtw_dist > (1.633708 + 5*0.8610685)) %>%
+                select(query) %>%
+                unique() %>%
+  as_vector()
+
+plate1 %>%
+  group_by(condition) %>%
+  filter(channel == "TAMRA") %>%
+  mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+  ungroup() %>%
+  filter(well %in% c("A1", "A2",outlier_dtw)) %>%
+  ggplot(aes(x = Temperature, y = value, group = condition))+
+  geom_line()+
+  facet_wrap(~well) 
+
+
+outlier_dtw <- dist_all_df %>%
+                filter(well == "M20") 
+> (1.633708 + 10*0.8610685)) %>%
+                select(query) %>%
+                unique() %>%
+  as_vector()
+
+plate1_dist_df %>%
+  select(query) %>% table()
+
+
+
+plate1_mat_query  <- plate1 %>% 
+              group_by(condition) %>%
+                mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+              ungroup() %>%
+              filter(channel == "TAMRA") %>%
+   filter(Compound_class == "test_cmpd") %>%
+              select(well, Temperature, value_norm) %>%
+              pivot_wider(names_from = well, values_from = value_norm) %>%
+              select(-Temperature)  %>%
+  t()
+
+plate1_mat_query %>% select(well) %>% table()
+
+plate1_mat_query %>% dim
+```
+
+```{r}
+plate1_mat_sel  <- plate1 %>% 
+                  filter(Temperature < 75) %>%
+                group_by(condition) %>%
+                mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+              ungroup() %>%
+              filter(channel == "TAMRA",
+                     row %in% c("L","M", "N")) %>%
+   #filter(Compound_class == "test_cmpd") %>%
+              select(well, Temperature, value_norm) %>%
+              pivot_wider(names_from = well, values_from = value_norm) %>%
+              select(-Temperature)  %>%
+              t()
+ 
+plate1_mat_all
+dist_sel_norm <- proxy::dist(plate1_mat_sel , plate1_mat_sel , method = "DTW", keep = TRUE, step = asymmetric, open.end = TRUE, open.begin = TRUE) # determine the distances to the references
+
+dist_sel_norm_df <- dist_sel_norm  %>%
+                  as.data.frame.matrix() %>%
+                dist_to_tibble() %>%
+                mutate(well = .$query) %>%
+                left_join(layout, by =  "well") 
+
+dist_sel_norm_df %>%
+  ggplot(aes(x = reference, y = dtw_dist, color = Compound_class)) +
+  geom_point(alpha = 0.5) 
+
+sel_test <- dist_sel_norm_df %>%
+
+  filter(dtw_dist < 1) %>%
+  select(reference) %>%
+  unique() %>%
+  as_vector()
+
+
+plate1 %>%
+  group_by(condition) %>%
+   filter(Temperature < 75)%>%
+  filter(channel == "TAMRA") %>%
+  mutate(value_norm = BBmisc::normalize(value, method = "range", range = c(0,1))) %>%
+  ungroup() %>%
+  filter(well %in% sel_test ) %>%
+  ggplot(aes(x = Temperature, y = value, group = condition))+
+  geom_line()+
+  facet_wrap(~well) 
+
+sel_test 
+```
+
+
+
+
+
+
+
+
+
 
 
 

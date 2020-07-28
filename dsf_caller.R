@@ -9,6 +9,61 @@
 # #filter <- dplyr::filter() 
 # #source("~/Box Sync/papers/paper1_dsfworld/20190929_dsfworld_modeling_update/dsfworld5_uploads_page_alone/support_scripts/dsfworld5_data_analysis.R") # scripts written to analyze and visualize DSF data)
 
+read_screen <- function( screen_file, layout, plate_name) {
+  
+  read_qTower(screen_file) %>%
+    mutate(Temperature = .$Temperature + (25-1))%>%
+    full_join( layout )   %>%
+    mutate(plate_number = rep(plate_name, times = nrow(.))) %>%
+    unite(condition, c(well, channel, plate_number), remove = FALSE) 
+}
+
+find_tms_closure <- function(win3d, n_meas, min_T, max_T) {  #function(low_T, high_T, n_meas, min_T, max_T) {
+  
+  function( df_raw ) {
+    
+    by_variable <- df_raw %>%
+      filter(channel == "TAMRA") %>%
+      filter( between(Temperature, min_T, max_T)) %>%
+      mutate(Temperature_norm = BBmisc::normalize(.$Temperature, method = "range", range = c(0,1)),
+             value_norm = BBmisc::normalize(.$value, method = "range", range = c(0,1))) %>%
+      mutate(variable = .$condition) %>%
+      group_by(variable) %>%
+      nest(data = c(Temperature, value, Temperature_norm, value_norm)) 
+    
+    
+    n2r <- make_temp_n2r(range(min_T:max_T)) 
+    win3d <- floor(3/((n2r(1) - n2r(0))/n_meas))
+    if ( win3d < 5 ) { win3d <<- 5 }
+    
+    
+    peak_finder_nest <<- make_peak_finder_nest( win3d ) ## this must be written into a different namespace, as it is used in functions which are called below, but is not an argument in them (a failure of those functions, and worth fixing, i might add...)
+    
+    sgfilt_nest <- sgfilt_set_n(n_ = 13)
+    
+    #### if you've forgotten to add Temperature_norm and value_norm, you get: Error in F[1:k, ] %*% x[1:n] : requires numeric/complex matrix/vector arguments
+    df_tms <- by_variable %>% #df_int %>% # add the first derivative Tms
+      plyr::mutate(sgd1 = purrr::map(data, sgfilt_nest, m_ = 1)) %>% # add the first derivative data
+      plyr::mutate(dRFU_tma = as_vector(purrr::map2(data, sgd1, Tm_by_dRFU)))
+    
+    
+    start_pars <- get_start_pars(by_variable)
+    s1_list <- model_all(s1_model, "s1_pred", start_pars, win3d) # requires "well" and "condition" columns
+    s1_d_list <- model_all(s1_d_model, "s1_d_pred", start_pars, win3d)
+    s2_list <- model_all(s2_model, "s2_pred", start_pars, win3d)
+    s2_d_list <- model_all(s2_d_model, "s2_d_pred", start_pars, win3d)
+    
+    
+    outlist <- list(df_tms = df_tms,
+                    s1_list = s1_list,
+                    s1_d_list = s1_d_list,
+                    s2_list = s2_list,
+                    s2_d_list = s2_d_list)
+  }
+  
+  
+}
+
 # needs only the tidyverse
 make_channel_vec <- function( df ) { # make the vector which specifies channel for each reading
   channels <- df %>% 
